@@ -6,6 +6,9 @@ import h5py  # Importing h5py library for working with HDF5 files
 
 
 class BeliefProcessor:
+    def __init__(self, device="cpu"):
+        self.device = "cuda" if device == "gpu" else device
+
     def get_beliefs(self, hd5_file_path, graph):
         # Open the HDF5 file in read mode
         with h5py.File(hd5_file_path, "r") as fp:
@@ -13,7 +16,10 @@ class BeliefProcessor:
             _keys = sorted(map(int, fp["beliefs"].keys()))
             # Initialize a list to store iteration number and corresponding beliefs
             # with the initial beliefs from the .bin file graph
-            iterations = [(0, graph.pg["ndata"]["beliefs"].tolist())]
+            initial_beliefs = graph.pg["ndata"]["beliefs"]
+            if hasattr(initial_beliefs, "to"):
+                initial_beliefs = initial_beliefs.to(device=self.device)
+            iterations = [(0, initial_beliefs.tolist())]
 
             # Iterate over each key (iteration number) in the HDF5 file
             for key in _keys:
