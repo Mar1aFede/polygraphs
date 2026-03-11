@@ -1,3 +1,6 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd  # Importing pandas library for data manipulation
 import h5py  # Importing h5py library for working with HDF5 files
 
@@ -44,16 +47,34 @@ class Beliefs:
     This class provides an iterator and get item to access beliefs
     """
 
-    def __init__(self, dataframe, belief_processor, graphs):
+    def __init__(
+        self,
+        dataframe,
+        belief_processor,
+        graphs,
+        parallel=True,
+        max_workers=None,
+    ):
         self.hd5_file_path = dataframe["hd5_file_path"]
         self.belief_processor = belief_processor
         self.graphs = graphs
         self.beliefs = [None] * len(dataframe)
+        self.parallel = parallel and len(self.beliefs) > 1
+        self.max_workers = max_workers or min(32, (os.cpu_count() or 1) + 4)
+        self._futures = None
         self.index = 0
 
+        if self.parallel:
+            self._executor = ThreadPoolExecutor(max_workers=self.max_workers)
+            self._futures = [
+                self._executor.submit(self._load_beliefs, idx)
+                for idx in range(len(self.beliefs))
+            ]
+        else:
+            self._executor = None
+
     def __getitem__(self, index):
-        if index > len(self.beliefs):
-            raise IndexError("Simulation index out of range")
+        self._check_index(index)
         return self.get(index)
 
     def __len__(self):
@@ -71,14 +92,25 @@ class Beliefs:
         return value
 
     def get(self, index):
+        self._check_index(index)
+
         # Return a saved beliefs dataframe using its index or load from file
         if self.beliefs[index] is not None:
             return self.beliefs[index]
-        elif index < len(self.beliefs):
-            self.beliefs[index] = self.belief_processor.get_beliefs(
-                self.hd5_file_path[index],
-                self.graphs[index],
-            )
+
+        if self._futures is not None:
+            self.beliefs[index] = self._futures[index].result()
             return self.beliefs[index]
-        else:
+
+        self.beliefs[index] = self._load_beliefs(index)
+        return self.beliefs[index]
+
+    def _check_index(self, index):
+        if index < 0 or index >= len(self.beliefs):
             raise IndexError("Simulation index out of range")
+
+    def _load_beliefs(self, index):
+        return self.belief_processor.get_beliefs(
+            self.hd5_file_path[index],
+            self.graphs[index],
+        )
