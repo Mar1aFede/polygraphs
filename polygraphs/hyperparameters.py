@@ -445,8 +445,16 @@ class PolyGraphHyperParameters(HyperParameters):
     def __init__(self):
         super().__init__()
 
-        # Target device
-        self.add(device="cpu")
+        # Target device (allow overriding via env var, default to GPU when available)
+        device = os.getenv("POLYGRAPHS_DEVICE")
+        if device is None:
+            try:
+                import torch  # local import to avoid hard dependency at module import time
+
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:  # pragma: no cover - fallback when torch is unavailable
+                device = "cpu"
+        self.add(device=device)
 
         # Operator name
         self.add(op=None)
