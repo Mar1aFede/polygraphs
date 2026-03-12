@@ -1,58 +1,59 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-import pandas as pd  # Importing pandas library for data manipulation
-import h5py  # Importing h5py library for working with HDF5 files
+import h5py
+import numpy as np
+import pandas as pd
+import torch
 
 
 class BeliefProcessor:
     def __init__(self, device="cpu"):
-        self.device = "cuda" if device == "gpu" else device
+        requested = "cuda" if device == "gpu" else device
+        if requested == "cuda" and not torch.cuda.is_available():
+            print("CUDA requested but no GPU available; falling back to CPU", flush=True)
+            self.device = "cpu"
+        else:
+            self.device = requested
+        print(f"BeliefProcessor device = {self.device}", flush=True)
 
     def get_beliefs(self, hd5_file_path, graph):
-        # Open the HDF5 file in read mode
+        node_ids = list(graph.nodes)
+
         with h5py.File(hd5_file_path, "r") as fp:
-            # Extract the keys (iteration numbers) from the 'beliefs' group in the HDF5 file
-            _keys = sorted(map(int, fp["beliefs"].keys()))
-            # Initialize a list to store iteration number and corresponding beliefs
-            # with the initial beliefs from the .bin file graph
+            keys = sorted(map(int, fp["beliefs"].keys()))
+
             initial_beliefs = graph.pg["ndata"]["beliefs"]
-            if hasattr(initial_beliefs, "to"):
-                initial_beliefs = initial_beliefs.to(device=self.device)
-            iterations = [(0, initial_beliefs.tolist())]
+            if not isinstance(initial_beliefs, torch.Tensor):
+                initial_beliefs = torch.as_tensor(
+                    initial_beliefs, dtype=torch.float32
+                )
 
-            # Iterate over each key (iteration number) in the HDF5 file
-            for key in _keys:
-                # Retrieve beliefs data for the current iteration
-                beliefs = fp["beliefs"][str(key)]
+            initial_beliefs = initial_beliefs.to(self.device)
+            belief_tensors = [initial_beliefs]
 
-                # Append the iteration number and beliefs data to the list
-                iterations.append((key, list(beliefs)))
+            for key in keys:
+                arr = np.asarray(fp["beliefs"][str(key)], dtype=np.float32)
+                belief_tensors.append(torch.from_numpy(arr).to(self.device))
 
-        # Create a MultiIndex for DataFrame indexing with iteration number and node as indices
+        all_beliefs = torch.stack(belief_tensors, dim=0)
+        all_beliefs_cpu = all_beliefs.cpu().numpy()
+
+        iteration_ids = [0] + keys
         index = pd.MultiIndex.from_product(
-            [[0, *_keys], list(graph.nodes)], names=["iteration", "node"]
+            [iteration_ids, node_ids],
+            names=["iteration", "node"],
         )
 
-        # Create an empty DataFrame with the defined MultiIndex
-        iterations_df = pd.DataFrame(index=index, columns=["beliefs"], dtype="Float32")
+        iterations_df = pd.DataFrame(
+            {"beliefs": all_beliefs_cpu.reshape(-1)},
+            index=index,
+        )
 
-        # Populate the DataFrame with beliefs data for each iteration
-        for key, beliefs in iterations:
-            iterations_df.loc[key, "beliefs"] = beliefs
-
-        # Return the populated DataFrame containing beliefs data for each iteration
         return iterations_df
 
 
 class Beliefs:
-    """
-    The Beliefs class stores the beliefs of simulations that have been
-    explicitly loaded for analysis using the Belief Processor
-
-    This class provides an iterator and get item to access beliefs
-    """
-
     def __init__(
         self,
         dataframe,
@@ -100,7 +101,6 @@ class Beliefs:
     def get(self, index):
         self._check_index(index)
 
-        # Return a saved beliefs dataframe using its index or load from file
         if self.beliefs[index] is not None:
             return self.beliefs[index]
 
